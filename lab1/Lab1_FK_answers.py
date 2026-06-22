@@ -84,9 +84,47 @@ def part2_forward_kinematics(joint_name, joint_parent, joint_offset, motion_data
     Tips:
         1. joint_orientations的四元数顺序为(x, y, z, w)
         2. from_euler时注意使用大写的XYZ
+
+    After load_motion_data(): ndarray N * M
     """
-    joint_positions = None
-    joint_orientations = None
+    M = len(joint_name)
+    joint_positions = np.zeros((M, 3))
+    joint_orientations = np.zeros((M, 4))
+    joint_rotations = [None for _ in range(M)]
+    frame = motion_data[frame_id]
+    channel_cursor = 0
+
+    for i in range(M):
+        if joint_parent[i] == -1:
+        # root
+
+            root_translation = frame[channel_cursor:channel_cursor + 3]
+            root_rotation = R.from_euler('XYZ', frame[channel_cursor + 3:channel_cursor + 6], degrees=True)
+            channel_cursor += 6
+
+            joint_positions[i] = root_translation + joint_offset[i]
+                # joint_offset can be (0,0,0) for the root cases. so pos is root_translation.
+            joint_rotations[i] = root_rotation
+            joint_orientations[i] = root_rotation.as_quat()
+
+        elif joint_name[i].endswith('_end'):
+            parent = joint_parent[i]
+            parent_rotation = joint_rotations[parent]
+
+            joint_positions[i] = joint_positions[parent] + parent_rotation.apply(joint_offset[i])
+            joint_rotations[i] = parent_rotation
+            joint_orientations[i] = parent_rotation.as_quat()
+
+        else:
+            parent = joint_parent[i]
+            parent_rotation = joint_rotations[parent]
+            local_rotation = R.from_euler('XYZ', frame[channel_cursor:channel_cursor + 3], degrees=True)
+            channel_cursor += 3
+
+            joint_positions[i] = joint_positions[parent] + parent_rotation.apply(joint_offset[i])
+            joint_rotations[i] = parent_rotation * local_rotation
+            joint_orientations[i] = joint_rotations[i].as_quat()
+
     return joint_positions, joint_orientations
 
 
