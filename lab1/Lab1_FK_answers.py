@@ -138,5 +138,62 @@ def part3_retarget_func(T_pose_bvh_path, A_pose_bvh_path):
         两个bvh的joint name顺序可能不一致哦(
         as_euler时也需要大写的XYZ
     """
-    motion_data = None
-    return motion_data
+
+    T_joint_name, T_joint_parent, T_joint_offset = part1_calculate_T_pose(T_pose_bvh_path)
+    A_joint_name, A_joint_parent, A_joint_offset = part1_calculate_T_pose(A_pose_bvh_path)
+
+    motion_data = load_motion_data(A_pose_bvh_path)
+
+    ### mapping A&T
+    A_Poes_Map, A_Channel_count = ChannelMapping(A_joint_name)
+    T_Poes_Map, T_Channel_count = ChannelMapping(T_joint_name)
+    retarget_motion_data = np.zeros((motion_data.shape[0], T_Channel_count))
+
+    ### data transfer to T-pose
+    for name in T_joint_name:
+        if name.endswith('_end'):
+            continue
+        A_start, A_end = A_Poes_Map[name]
+        T_start, T_end = T_Poes_Map[name]
+
+        Ori = motion_data[:, A_start:A_end]
+        if name == "lShoulder":
+            retarget_motion_data[:, T_start:T_end] = retargetRotation(1,Ori)
+
+        elif name == "rShoulder":
+            retarget_motion_data[:, T_start:T_end] = retargetRotation(-1, Ori)
+
+        else:
+            retarget_motion_data[:, T_start:T_end] = motion_data[:, A_start:A_end]
+
+
+    #return motion_data
+    return retarget_motion_data
+
+
+def ChannelMapping(joint_name):
+    Channel_Map = {}
+    cursor = 0
+
+    for name in joint_name:
+        if name.endswith('_end'):
+            Channel_Map[name] = None
+
+        elif name == "RootJoint":
+            Channel_Map[name] = (cursor, cursor + 6)
+            cursor += 6
+        else :
+            Channel_Map[name] = (cursor, cursor + 3)
+            cursor += 3
+
+    return Channel_Map, cursor
+
+
+def retargetRotation(i,Ori):
+
+    OriRotation = R.from_euler('XYZ', Ori, degrees=True)
+    CorrRotation = R.from_euler('XYZ', [0, 0, -45 * i], degrees=True)
+    TgRotation = OriRotation * CorrRotation
+    TgEuler = TgRotation.as_euler('XYZ', degrees=True)
+
+    return TgEuler
