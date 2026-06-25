@@ -1,6 +1,7 @@
 from task1_forward_kinematics import *
 from scipy.spatial.transform import Rotation as R
 from Lab2_IK_answers import *
+
 class MetaData:
     def __init__(self, joint_name, joint_parent, joint_initial_position, root_joint, end_joint):
         """
@@ -39,13 +40,13 @@ class MetaData:
         # 合并路径，消去重复的节点
         while path1 and path2 and path2[-1] == path1[-1]:
             path1.pop()
+            # a: record the last element that not repeat
             a = path2.pop()
             
         path2.append(a)
         path = path2 + list(reversed(path1))
         path_name = [self.joint_name[i] for i in path]
         return path, path_name, path1, path2
-    
 
 
 
@@ -170,7 +171,7 @@ def main():
     # part1
     # part1_simple(viewer, np.array([0.5, 0.75, 0.5]))
     # part1_hard(viewer, np.array([0.5, 0.5, 0.5]))
-    # part1_animation(viewer, np.array([0.5, 0.5, 0.5]))
+    part1_animation(viewer, np.array([0.5, 0.5, 0.5]))
     
     # part2
     # part2(viewer, 'data/walk60.bvh')
