@@ -5,6 +5,7 @@ if TYPE_CHECKING:
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+import part1_ik_solvers as part1_ik
 # part1_inverse_kinematics
 # part1_IK_V
 # part1_IK_BUG1
@@ -97,7 +98,7 @@ def part1_IK_BUG1(meta_data:MetaData, joint_positions, joint_orientations, targe
     return joint_positions, joint_orientations
 
 
-def part1_inverse_kinematics(meta_data:MetaData, joint_positions, joint_orientations, target_pose):
+def part1_IK_V2(meta_data:MetaData, joint_positions, joint_orientations, target_pose):
     """
     完成函数，计算逆运动学
     输入:
@@ -401,6 +402,30 @@ def part1_IK_V4(meta_data:MetaData, joint_positions, joint_orientations, target_
 
     return best_positions, best_orientations
 
+
+def part1_inverse_kinematics(meta_data, joint_positions, joint_orientations, target_pose):
+    """
+    完成函数，计算逆运动学
+    输入:
+        meta_data: 为了方便，将一些固定信息进行了打包，见上面的meta_data类
+        joint_positions: 当前的关节位置，是一个numpy数组，shape为(M, 3)，M为关节数
+        joint_orientations: 当前的关节朝向，是一个numpy数组，shape为(M, 4)，M为关节数
+        target_pose: 目标位置，是一个numpy数组，shape为(3,)
+    输出:
+        经过IK后的姿态
+        joint_positions: 计算得到的关节位置，是一个numpy数组，shape为(M, 3)，M为关节数
+        joint_orientations: 计算得到的关节朝向，是一个numpy数组，shape为(M, 4)，M为关节数
+    """
+
+    # return part1_ik.solve_ccd(
+    #     meta_data, joint_positions, joint_orientations, target_pose
+    # )
+    # return part1_ik.solve_autograd(
+    #     meta_data, joint_positions, joint_orientations, target_pose
+    # )
+    return part1_ik.solve_gauss_newton(
+        meta_data, joint_positions, joint_orientations, target_pose
+    )
 
 def part2_inverse_kinematics(meta_data, joint_positions, joint_orientations, relative_x, relative_z, target_height):
     """
