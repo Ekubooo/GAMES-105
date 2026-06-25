@@ -1,9 +1,10 @@
-import numpy as np
-from scipy.spatial.transform import Rotation as R
-
+from __future__ import annotations
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from task2_inverse_kinematics import MetaData
+
+import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 def part1_IK_BUG1(meta_data:MetaData, joint_positions, joint_orientations, target_pose):
     """
@@ -200,14 +201,48 @@ def part1_inverse_kinematics(meta_data:MetaData, joint_positions, joint_orientat
     path = meta_data.get_path_from_root_to_end()[0]
 
     # 2 CCD Method to apply IK
-    for iterator in range(max_iteration):
-        # residual check
-        CCD_Flag = False
-        residual = np.linalg.norm(joint_positions[path[-1]] - target_pose)
-        if residual <= min_Res:
-            break
+    joint_positions, is_success = Solve_CCD_IK(
+        joint_positions,
+        path,
+        target_pose,
+        min_Res,
+        25
+    )
 
-        # end joint is end not joint, so exclude([-1])?
+    # 3 revert if root is not the root of model
+
+    return joint_positions, joint_orientations
+
+
+def part2_inverse_kinematics(meta_data, joint_positions, joint_orientations, relative_x, relative_z, target_height):
+    """
+    输入lWrist相对于RootJoint前进方向的xz偏移，以及目标高度，IK以外的部分与bvh一致
+    """
+    
+    return joint_positions, joint_orientations
+
+def bonus_inverse_kinematics(meta_data, joint_positions, joint_orientations, left_target_pose, right_target_pose):
+    """
+    输入左手和右手的目标位置，固定左脚，完成函数，计算逆运动学
+    """
+    
+    return joint_positions, joint_orientations
+
+
+def is_descendant(k, i, joint_parent):
+    current = k
+
+    while current != -1:
+        if current == i:
+            return True
+        current = joint_parent[current]
+
+    return False
+
+def Solve_CCD_IK(joint_positions, path, target_pose, min_Res, max_iter):
+    # 2 CCD Method to apply IK
+    for iterator in range(max_iteration):
+
         for i in reversed(path[:-1]):
             Joint_Pos = joint_positions[i]
             End_Pos = joint_positions[path[-1]]
@@ -252,38 +287,6 @@ def part1_inverse_kinematics(meta_data:MetaData, joint_positions, joint_orientat
 
             residual = np.linalg.norm(joint_positions[path[-1]] - target_pose)
             if residual <= min_Res:
-                CCD_Flag = True
-                break
+                return joint_positions, True
 
-        if CCD_Flag: break
-
-    # 3 revert if root is not the root of model
-
-    return joint_positions, joint_orientations
-
-
-def part2_inverse_kinematics(meta_data, joint_positions, joint_orientations, relative_x, relative_z, target_height):
-    """
-    输入lWrist相对于RootJoint前进方向的xz偏移，以及目标高度，IK以外的部分与bvh一致
-    """
-    
-    return joint_positions, joint_orientations
-
-def bonus_inverse_kinematics(meta_data, joint_positions, joint_orientations, left_target_pose, right_target_pose):
-    """
-    输入左手和右手的目标位置，固定左脚，完成函数，计算逆运动学
-    """
-    
-    return joint_positions, joint_orientations
-
-
-def is_descendant(k, i, joint_parent):
-    current = k
-
-    while current != -1:
-        if current == i:
-            return True
-        current = joint_parent[current]
-
-    return False
-
+    return joint_positions, False
