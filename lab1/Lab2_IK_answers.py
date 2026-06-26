@@ -6,6 +6,7 @@ if TYPE_CHECKING:
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import part1_ik_solvers as part1_ik
+
 # part1_inverse_kinematics
 # part1_IK_V
 # part1_IK_BUG1
@@ -98,7 +99,7 @@ def part1_IK_BUG1(meta_data:MetaData, joint_positions, joint_orientations, targe
     return joint_positions, joint_orientations
 
 
-def part1_IK_V2(meta_data:MetaData, joint_positions, joint_orientations, target_pose):
+def part1_inverse_kinematics(meta_data:MetaData, joint_positions, joint_orientations, target_pose):
     """
     完成函数，计算逆运动学
     输入:
@@ -128,8 +129,10 @@ def part1_IK_V2(meta_data:MetaData, joint_positions, joint_orientations, target_
         if residual <= min_Res:
             break
 
-        # end joint is end not joint, so exclude([-1])?
-        for i in reversed(path[:-1]):
+        # end joint is end not joint, so exclude path[-1]
+        # in simple case, avoid path[0] (Root of model) of CCD rotation.
+        # in hard case,
+        for i in reversed(path[1:-1]):
             Joint_Pos = joint_positions[i]
             End_Pos = joint_positions[path[-1]]
 
@@ -403,7 +406,7 @@ def part1_IK_V4(meta_data:MetaData, joint_positions, joint_orientations, target_
     return best_positions, best_orientations
 
 
-def part1_inverse_kinematics(meta_data, joint_positions, joint_orientations, target_pose):
+def part1_IK_V5(meta_data, joint_positions, joint_orientations, target_pose):
     """
     完成函数，计算逆运动学
     输入:
@@ -426,6 +429,7 @@ def part1_inverse_kinematics(meta_data, joint_positions, joint_orientations, tar
     return part1_ik.solve_gauss_newton(
         meta_data, joint_positions, joint_orientations, target_pose
     )
+
 
 def part2_inverse_kinematics(meta_data, joint_positions, joint_orientations, relative_x, relative_z, target_height):
     """
