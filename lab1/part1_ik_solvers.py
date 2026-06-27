@@ -3,8 +3,32 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+
+def _part1_rotation_between(source, target, epsilon=1e-10):
+    """Return the shortest rotation from source vector to target vector."""
+    source_norm = np.linalg.norm(source)
+    target_norm = np.linalg.norm(target)
+    if source_norm < epsilon or target_norm < epsilon:
+        return None
+
+    source = source / source_norm
+    target = target / target_norm
+    cross = np.cross(source, target)
+    cross_norm = np.linalg.norm(cross)
+    dot = float(np.clip(np.dot(source, target), -1.0, 1.0))
+    if cross_norm < epsilon:
+        if dot > 0.0:
+            return None
+        basis = np.eye(3)[np.argmin(np.abs(source))]
+        axis = np.cross(source, basis)
+        axis /= np.linalg.norm(axis)
+        return R.from_rotvec(axis * np.pi)
+
+    return R.from_rotvec(cross / cross_norm * np.arctan2(cross_norm, dot))
+
+
 class _Part1IKContext:
-    """Store solver state and rotate subtrees after rerooting the skeleton."""
+    """Legacy rerooted-chain state used only by the autograd solver."""
 
     def __init__(self, meta_data, joint_positions, joint_orientations, target_pose):
         self.meta_data = meta_data
@@ -22,8 +46,6 @@ class _Part1IKContext:
         self.root, self.end = self.path[0], self.path[-1]
         self.root_position = self.positions[self.root].copy()
         self._normalise_quaternions()
-
-        # Reroot the undirected skeleton at the joint that must remain fixed.
         self.children = self._build_rerooted_children()
         self.subtrees = {
             joint: self._collect_subtree(joint) for joint in self.path[:-1]
@@ -110,96 +132,8 @@ class _Part1IKContext:
         return self.positions.copy(), self.orientations.copy()
 
 
-def _part1_rotation_between(source, target, epsilon=1e-10):
-    """Return the shortest rotation from source to target."""
-    source_norm, target_norm = np.linalg.norm(source), np.linalg.norm(target)
-    if source_norm < epsilon or target_norm < epsilon:
-        return None
-    source, target = source / source_norm, target / target_norm
-    cross = np.cross(source, target)
-    cross_norm = np.linalg.norm(cross)
-    dot = float(np.clip(np.dot(source, target), -1.0, 1.0))
-    if cross_norm < epsilon:
-        if dot > 0.0:
-            return None
-        basis = np.eye(3)[np.argmin(np.abs(source))]
-        axis = np.cross(source, basis)
-        return R.from_rotvec(axis / np.linalg.norm(axis) * np.pi)
-    return R.from_rotvec(
-        cross / cross_norm * np.arctan2(cross_norm, dot)
-    )
-
-
-def _part1_singularity_axis(context):
-    """Choose a deterministic bend axis for a straight chain."""
-    direction = context.target - context.positions[context.root]
-    if np.linalg.norm(direction) < 1e-10:
-        direction = context.positions[context.end] - context.positions[context.root]
-    if np.linalg.norm(direction) < 1e-10:
-        direction = context.positions[context.path[1]] - context.positions[context.root]
-    direction /= max(np.linalg.norm(direction), 1e-10)
-    basis = np.eye(3)[np.argmin(np.abs(direction))]
-    axis = np.cross(direction, basis)
-    return axis / max(np.linalg.norm(axis), 1e-10)
-
-
-def _part1_break_singularity(context, angle=0.04):
-    """Slightly rotate a reachable collinear chain out of singularity."""
-    if len(context.path) < 3:
-        return
-    context.apply_world_rotation(
-        context.path[0],
-        R.from_rotvec(_part1_singularity_axis(context) * angle),
-    )
-    context.remember_best()
-
-
-def _part1_solve_ccd(context, tolerance=0.005, max_iterations=80):
-    """Align joints cyclically from the end effector back to the fixed root."""
-    stagnant_rounds = recovery_count = 0
-    for _ in range(max_iterations):
-        if context.error() <= tolerance:
-            break
-        round_start = context.error()
-        for joint in reversed(context.path[:-1]):
-            pivot = context.positions[joint]
-            delta = _part1_rotation_between(
-                context.positions[context.end] - pivot,
-                context.target - pivot,
-            )
-            if delta is not None:
-                context.apply_world_rotation(joint, delta)
-                context.remember_best()
-            if context.error() <= tolerance:
-                break
-
-        improvement = round_start - context.error()
-        stagnant_rounds = stagnant_rounds + 1 if improvement < 1e-8 else 0
-        if stagnant_rounds >= 2:
-            if context.reachable and recovery_count < 3:
-                context.restore(context.best_state)
-                sign = -1.0 if recovery_count % 2 else 1.0
-                _part1_break_singularity(context, sign * 0.04)
-                recovery_count += 1
-                stagnant_rounds = 0
-            else:
-                break
-    context.remember_best()
-    return context.result()
-
-
-def _part1_geometric_jacobian(context):
-    """Build ball-joint columns with the lecture formula axis cross radius."""
-    end_position = context.positions[context.end]
-    columns = []
-    for joint in context.path[:-1]:
-        radius = end_position - context.positions[joint]
-        columns.extend(np.cross(axis, radius) for axis in np.eye(3))
-    return np.asarray(columns, dtype=np.float64).T
-
-
-class _Part1GaussNewtonContext:
-    """Gauss-Newton state using the original FK hierarchy directly."""
+class _Part1OriginalFKContext:
+    """Part1 IK state solved directly in the original FK hierarchy."""
 
     def __init__(self, meta_data, joint_positions, joint_orientations, target_pose):
         self.meta_data = meta_data
@@ -433,6 +367,92 @@ class _Part1GaussNewtonContext:
         return self.positions.copy(), quaternions
 
 
+def _part1_apply_world_delta_to_original_fk_joint(
+    context, joint, rotvec, max_angle=0.35
+):
+    """Apply one CCD world-space delta in the original FK hierarchy."""
+    angle = np.linalg.norm(rotvec)
+    if angle < 1e-12:
+        return
+    if angle > max_angle:
+        rotvec = rotvec * (max_angle / angle)
+
+    parent = context.parents[joint]
+    parent_global = (
+        np.eye(3) if parent == -1 else context.global_matrices[parent]
+    )
+    delta_world = R.from_rotvec(rotvec).as_matrix()
+    delta_local = parent_global.T @ delta_world @ parent_global
+    context.local_matrices[joint] = delta_local @ context.local_matrices[joint]
+    context.forward_kinematics()
+
+
+def _part1_solve_ccd_original_fk(context, tolerance=0.005, max_iterations=80):
+    """CCD solved directly in the original FK hierarchy."""
+    stagnant_rounds = 0
+    for _ in range(max_iterations):
+        current_error = context.error()
+        context.remember_best()
+        if current_error <= tolerance:
+            break
+
+        round_start = current_error
+        for joint in reversed(context.variables):
+            end_affected = context.end in context.descendants[joint]
+            root_affected = context.root in context.descendants[joint]
+            if not (end_affected or root_affected):
+                continue
+
+            pivot = context.positions[joint]
+            if end_affected and root_affected:
+                source = context.positions[context.end] - context.positions[context.root]
+                target = context.target - context.fixed_position
+            elif end_affected:
+                source = context.positions[context.end] - pivot
+                target = context.target - pivot
+            else:
+                desired_root = (
+                    context.positions[context.end]
+                    + context.fixed_position
+                    - context.target
+                )
+                source = context.positions[context.root] - pivot
+                target = desired_root - pivot
+
+            delta = _part1_rotation_between(source, target)
+            if delta is None:
+                continue
+            rotvec = delta.as_rotvec()
+            if not np.isfinite(rotvec).all():
+                continue
+
+            baseline = context.snapshot()
+            before = context.error()
+            accepted = False
+            for scale in (1.0, 0.5, 0.25, 0.125):
+                context.restore(baseline)
+                _part1_apply_world_delta_to_original_fk_joint(
+                    context, joint, rotvec * scale
+                )
+                after = context.error()
+                if np.isfinite(after) and after < before - 1e-10:
+                    context.remember_best()
+                    accepted = True
+                    break
+            if not accepted:
+                context.restore(baseline)
+            if context.error() <= tolerance:
+                break
+
+        improvement = round_start - context.error()
+        stagnant_rounds = stagnant_rounds + 1 if improvement < 1e-8 else 0
+        if stagnant_rounds >= 3:
+            break
+
+    context.remember_best()
+    return context.result()
+
+
 def _part1_solve_gauss_newton(context, tolerance=0.005, max_iterations=100):
     """Damped Gauss-Newton solved directly in the original FK hierarchy."""
     if context.unreachable:
@@ -496,8 +516,31 @@ def _part1_solve_gauss_newton(context, tolerance=0.005, max_iterations=100):
     return context.result()
 
 
+def _part1_singularity_axis(context):
+    """Choose a deterministic bend axis for a legacy rerooted chain."""
+    direction = context.target - context.positions[context.root]
+    if np.linalg.norm(direction) < 1e-10:
+        direction = context.positions[context.end] - context.positions[context.root]
+    if np.linalg.norm(direction) < 1e-10:
+        direction = context.positions[context.path[1]] - context.positions[context.root]
+    direction /= max(np.linalg.norm(direction), 1e-10)
+    basis = np.eye(3)[np.argmin(np.abs(direction))]
+    axis = np.cross(direction, basis)
+    return axis / max(np.linalg.norm(axis), 1e-10)
+
+
+def _part1_geometric_jacobian(context):
+    """Build legacy rerooted-chain Jacobian columns as axis cross radius."""
+    end_position = context.positions[context.end]
+    columns = []
+    for joint in context.path[:-1]:
+        radius = end_position - context.positions[joint]
+        columns.extend(np.cross(axis, radius) for axis in np.eye(3))
+    return np.asarray(columns, dtype=np.float64).T
+
+
 def _part1_torch_rotation_matrices(torch, rotation_vectors):
-    """Differentiable Rodrigues formula using sinc for stability near zero."""
+    """Differentiable Rodrigues formula using sinc near zero."""
     count = rotation_vectors.shape[0]
     x, y, z = rotation_vectors.unbind(dim=1)
     zeros = torch.zeros_like(x)
@@ -514,7 +557,7 @@ def _part1_torch_rotation_matrices(torch, rotation_vectors):
 
 
 def _part1_torch_end_position(torch, root, offsets, parameters):
-    """Run differentiable forward kinematics on the rerooted chain."""
+    """Run differentiable forward kinematics on the legacy rerooted chain."""
     matrices = _part1_torch_rotation_matrices(torch, parameters)
     position = root
     accumulated = torch.eye(3, dtype=parameters.dtype, device=parameters.device)
@@ -534,14 +577,8 @@ def _part1_apply_local_parameters(context, parameters):
         accumulated = accumulated @ local
 
 
-
-
-
-
-# Refine autograd initialization: preserve the unmodified pose as the baseline
-# and add a bend only when the geometric gradient is singular.
 def _part1_solve_autograd(context, tolerance=0.005, max_iterations=400):
-    """PyTorch autograd with Adam and a safe zero-rotation baseline."""
+    """PyTorch autograd solver for the legacy rerooted chain."""
     try:
         import torch
     except ImportError as error:
@@ -600,12 +637,13 @@ def _part1_solve_autograd(context, tolerance=0.005, max_iterations=400):
     context.remember_best()
     return context.result()
 
+
 def solve_ccd(meta_data, joint_positions, joint_orientations, target_pose):
     """Solve Part1 IK with cyclic coordinate descent."""
-    context = _Part1IKContext(
+    context = _Part1OriginalFKContext(
         meta_data, joint_positions, joint_orientations, target_pose
     )
-    return _part1_solve_ccd(context)
+    return _part1_solve_ccd_original_fk(context)
 
 
 def solve_autograd(meta_data, joint_positions, joint_orientations, target_pose):
@@ -620,7 +658,7 @@ def solve_gauss_newton(
     meta_data, joint_positions, joint_orientations, target_pose
 ):
     """Solve Part1 IK with the damped Gauss-Newton method."""
-    context = _Part1GaussNewtonContext(
+    context = _Part1OriginalFKContext(
         meta_data, joint_positions, joint_orientations, target_pose
     )
     return _part1_solve_gauss_newton(context)

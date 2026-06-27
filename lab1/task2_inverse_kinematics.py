@@ -104,7 +104,7 @@ def part1_animation(viewer, target_pos):
             target_pos = np.array(self.marker.getPos())
 
             # part1_inverse_kinematics   part1_IK_BUG1   part1_IK_Origin    part1_IK_Origin_hard
-            self.joint_position, self.joint_orientation = part1_IK_Origin_hard(meta_data, self.joint_position, self.joint_orientation, target_pos)
+            self.joint_position, self.joint_orientation = part1_inverse_kinematics(meta_data, self.joint_position, self.joint_orientation, target_pos)
             viewer.show_pose(joint_name, self.joint_position, self.joint_orientation)
     handle = UpdateHandle(marker, joint_position, joint_orientation)
     handle.update_func(viewer)
@@ -175,10 +175,10 @@ def main():
     # part1
     # part1_simple(viewer, np.array([0.5, 0.75, 0.5]))
     # part1_hard(viewer, np.array([0.5, 0.5, 0.5]))
-    part1_animation(viewer, np.array([0.5, 0.5, 0.5]))
+    # part1_animation(viewer, np.array([0.5, 0.5, 0.5]))
 
     # part2
-    # part2(viewer, 'data/walk60.bvh')
+    part2(viewer, 'data/walk60.bvh')
     
     # bonus(viewer, np.array([0.5, 0.5, 0.5]), np.array([0, 0.5, 0.5]))
 
