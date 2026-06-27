@@ -198,52 +198,300 @@ def _part1_geometric_jacobian(context):
     return np.asarray(columns, dtype=np.float64).T
 
 
-def _part1_apply_parameter_step(context, step, scale, max_angle=0.25):
-    """Apply one world-space rotation-vector step to all chain joints."""
-    for joint, vector in reversed(list(zip(context.path[:-1], step.reshape(-1, 3)))):
-        vector = vector * scale
-        angle = np.linalg.norm(vector)
-        if angle > max_angle:
-            vector *= max_angle / angle
-        if np.linalg.norm(vector) > 1e-12:
-            context.apply_world_rotation(joint, R.from_rotvec(vector))
+class _Part1GaussNewtonContext:
+    """Gauss-Newton state using the original FK hierarchy directly."""
+
+    def __init__(self, meta_data, joint_positions, joint_orientations, target_pose):
+        self.meta_data = meta_data
+        self.parents = list(meta_data.joint_parent)
+        self.rest_positions = np.asarray(
+            meta_data.joint_initial_position, dtype=np.float64
+        )
+        self.input_positions = np.asarray(joint_positions, dtype=np.float64).copy()
+        self.input_orientations = np.asarray(
+            joint_orientations, dtype=np.float64
+        ).copy()
+        self.requested_target = np.asarray(target_pose, dtype=np.float64).reshape(3)
+        self.target = self.requested_target.copy()
+        self.path = list(meta_data.get_path_from_root_to_end()[0])
+        if len(self.path) < 2:
+            raise ValueError("IK path must contain at least two joints.")
+        if self.input_positions.shape != (len(self.parents), 3):
+            raise ValueError("joint_positions has an invalid shape.")
+        if self.input_orientations.shape != (len(self.parents), 4):
+            raise ValueError("joint_orientations has an invalid shape.")
+        if self.rest_positions.shape != self.input_positions.shape:
+            raise ValueError("joint_initial_position has an invalid shape.")
+
+        self.root = meta_data.joint_name.index(meta_data.root_joint)
+        self.end = meta_data.joint_name.index(meta_data.end_joint)
+        self.fixed_position = self.input_positions[self.root].copy()
+        self.chain_length = self._path_chain_length()
+        self.unreachable = self._preprocess_target()
+        self.original_root = self._find_original_root()
+        self.children = self._build_children()
+        self.descendants = self._build_descendants()
+        self.order = self._build_topological_order()
+        self.variables = self._build_variable_joints()
+        if not self.variables:
+            raise ValueError("IK path must contain at least one movable edge.")
+
+        self.local_matrices = self._global_quaternions_to_local_matrices()
+        self.positions = np.zeros_like(self.input_positions)
+        self.global_matrices = [np.eye(3) for _ in self.parents]
+        self.forward_kinematics()
+        self.best_error = self.error()
+        self.best_state = self.snapshot()
+
+    def _path_chain_length(self):
+        return float(sum(
+            np.linalg.norm(self.rest_positions[child] - self.rest_positions[parent])
+            for parent, child in zip(self.path[:-1], self.path[1:])
+        ))
+
+    def _preprocess_target(self):
+        direction = self.requested_target - self.fixed_position
+        distance = np.linalg.norm(direction)
+        if not np.isfinite(distance):
+            self.target = self.fixed_position.copy()
+            return True
+        if distance <= self.chain_length or distance < 1e-12:
+            self.target = self.requested_target.copy()
+            return False
+
+        margin = max(0.03, 0.05 * self.chain_length)
+        stable_radius = max(self.chain_length - margin, 0.0)
+        self.target = self.fixed_position + direction / distance * stable_radius
+        return True
+
+    def _find_original_root(self):
+        for joint, parent in enumerate(self.parents):
+            if parent == -1:
+                return joint
+        raise ValueError("The skeleton must contain one original root joint.")
+
+    def _build_children(self):
+        children = [[] for _ in self.parents]
+        for child, parent in enumerate(self.parents):
+            if parent != -1:
+                children[parent].append(child)
+        return children
+
+    def _build_descendants(self):
+        descendants = []
+        for joint in range(len(self.parents)):
+            seen, stack = set(), list(self.children[joint])
+            while stack:
+                child = stack.pop()
+                seen.add(child)
+                stack.extend(self.children[child])
+            descendants.append(seen)
+        return descendants
+
+    def _build_topological_order(self):
+        order, queue = [], [self.original_root]
+        while queue:
+            joint = queue.pop(0)
+            order.append(joint)
+            queue.extend(self.children[joint])
+        if len(order) != len(self.parents):
+            raise ValueError("The skeleton must be a connected tree.")
+        return order
+
+    def _build_variable_joints(self):
+        variables = []
+        for first, second in zip(self.path[:-1], self.path[1:]):
+            if self.parents[first] == second:
+                joint = second
+            elif self.parents[second] == first:
+                joint = first
+            else:
+                raise ValueError("IK path contains a non-adjacent edge.")
+            if joint not in variables:
+                variables.append(joint)
+        return variables
+
+    def _normalised_input_quaternions(self):
+        quaternions = self.input_orientations.copy()
+        norms = np.linalg.norm(quaternions, axis=1, keepdims=True)
+        invalid = norms[:, 0] < 1e-12
+        quaternions[~invalid] /= norms[~invalid]
+        quaternions[invalid] = np.array([0.0, 0.0, 0.0, 1.0])
+        return quaternions
+
+    def _global_quaternions_to_local_matrices(self):
+        quaternions = self._normalised_input_quaternions()
+        global_matrices = [R.from_quat(quat).as_matrix() for quat in quaternions]
+        local_matrices = [np.eye(3) for _ in self.parents]
+        for joint in self.order:
+            parent = self.parents[joint]
+            if parent == -1:
+                local_matrices[joint] = global_matrices[joint]
+            else:
+                local_matrices[joint] = global_matrices[parent].T @ global_matrices[joint]
+        return local_matrices
+
+    def snapshot(self):
+        return [matrix.copy() for matrix in self.local_matrices]
+
+    def restore(self, state):
+        self.local_matrices = [matrix.copy() for matrix in state]
+        self.forward_kinematics()
+
+    def forward_kinematics(self):
+        self.positions[...] = 0.0
+        for joint in self.order:
+            parent = self.parents[joint]
+            if parent == -1:
+                self.global_matrices[joint] = self.local_matrices[joint]
+            else:
+                self.global_matrices[joint] = (
+                    self.global_matrices[parent] @ self.local_matrices[joint]
+                )
+            for child in self.children[joint]:
+                offset = self.rest_positions[child] - self.rest_positions[joint]
+                self.positions[child] = (
+                    self.positions[joint] + self.global_matrices[joint] @ offset
+                )
+
+        # Keep the requested IK root fixed after solving in the original tree.
+        self.positions += self.fixed_position - self.positions[self.root]
+
+    def error(self):
+        return float(np.linalg.norm(self.positions[self.end] - self.target))
+
+    def remember_best(self):
+        current_error = self.error()
+        if current_error < self.best_error:
+            self.best_error = current_error
+            self.best_state = self.snapshot()
+
+    def variable_scales(self):
+        scales = []
+        for joint in self.variables:
+            name = self.meta_data.joint_name[joint]
+            if name.endswith("_end") or "Toe" in name:
+                scale = 0.04
+            elif "Ankle" in name:
+                scale = 0.08
+            elif "Knee" in name:
+                scale = 0.25
+            elif "Hip" in name:
+                scale = 0.45
+            elif name in ("RootJoint", "pelvis_lowerback", "lowerback_torso"):
+                scale = 0.8
+            else:
+                scale = 1.0
+            scales.extend((scale, scale, scale))
+        return np.asarray(scales, dtype=np.float64)
+
+    def raw_point_derivative(self, joint, point, axis):
+        if point not in self.descendants[joint]:
+            return np.zeros(3, dtype=np.float64)
+        return np.cross(axis, self.positions[point] - self.positions[joint])
+
+    def jacobian(self):
+        columns = []
+        for joint in self.variables:
+            for axis in np.eye(3):
+                end_delta = self.raw_point_derivative(joint, self.end, axis)
+                root_delta = self.raw_point_derivative(joint, self.root, axis)
+                columns.append(end_delta - root_delta)
+        return np.asarray(columns, dtype=np.float64).T
+
+    def apply_parameter_step(self, step, scale, max_angle=0.2):
+        parent_frames = {}
+        for joint in self.variables:
+            parent = self.parents[joint]
+            parent_frames[joint] = (
+                np.eye(3) if parent == -1 else self.global_matrices[parent].copy()
+            )
+
+        for joint, vector in zip(self.variables, step.reshape(-1, 3)):
+            vector = vector * scale
+            angle = np.linalg.norm(vector)
+            if angle > max_angle:
+                vector *= max_angle / angle
+            if np.linalg.norm(vector) < 1e-12:
+                continue
+
+            # Convert a world-space rotation increment into the local frame.
+            parent_global = parent_frames[joint]
+            delta_world = R.from_rotvec(vector).as_matrix()
+            delta_local = parent_global.T @ delta_world @ parent_global
+            self.local_matrices[joint] = delta_local @ self.local_matrices[joint]
+        self.forward_kinematics()
+
+    def result(self):
+        self.restore(self.best_state)
+        quaternions = np.asarray([
+            R.from_matrix(matrix).as_quat() for matrix in self.global_matrices
+        ])
+        norms = np.linalg.norm(quaternions, axis=1, keepdims=True)
+        quaternions /= np.maximum(norms, 1e-12)
+        self.positions[self.root] = self.fixed_position
+        return self.positions.copy(), quaternions
 
 
-def _part1_solve_gauss_newton(context, tolerance=0.005, max_iterations=80):
-    """Damped Gauss-Newton using a stable task-space normal equation."""
-    damping, failed_steps = 1e-3, 0
+def _part1_solve_gauss_newton(context, tolerance=0.005, max_iterations=100):
+    """Damped Gauss-Newton solved directly in the original FK hierarchy."""
+    if context.unreachable:
+        tolerance = max(tolerance, 0.01)
+        max_iterations = min(max_iterations, 20)
+
+    damping, failed_steps, stagnant_steps = 1e-3, 0, 0
+    last_error = context.error()
+    column_scales = context.variable_scales()
     for _ in range(max_iterations):
         current_error = context.error()
+        context.remember_best()
         if current_error <= tolerance:
             break
-        jacobian = _part1_geometric_jacobian(context)
+        if not np.isfinite(current_error):
+            break
+
+        jacobian = context.jacobian()
         residual = context.target - context.positions[context.end]
-        system = jacobian @ jacobian.T + damping * np.eye(3)
+        if not (np.isfinite(jacobian).all() and np.isfinite(residual).all()):
+            break
+
+        weighted_jacobian = jacobian * column_scales[None, :]
+        system = weighted_jacobian @ weighted_jacobian.T + damping * np.eye(3)
         try:
-            step = jacobian.T @ np.linalg.solve(system, residual)
+            z = weighted_jacobian.T @ np.linalg.solve(system, residual)
         except np.linalg.LinAlgError:
-            step = jacobian.T @ np.linalg.pinv(system) @ residual
+            z = weighted_jacobian.T @ np.linalg.pinv(system) @ residual
+        step = column_scales * z
+        step_norm = np.linalg.norm(step)
+        if not np.isfinite(step_norm) or step_norm < 1e-10:
+            break
 
         baseline, accepted = context.snapshot(), False
-        for scale in (1.0, 0.5, 0.25, 0.125):
+        for scale in (1.0, 0.5, 0.25, 0.125, 0.0625):
             context.restore(baseline)
-            _part1_apply_parameter_step(context, step, scale)
-            if context.error() < current_error - 1e-10:
-                context.remember_best()
+            context.apply_parameter_step(step, scale)
+            trial_error = context.error()
+            if not np.isfinite(trial_error):
+                continue
+            if trial_error < current_error - 1e-10:
                 damping = max(damping * 0.7, 1e-6)
                 failed_steps, accepted = 0, True
+                context.remember_best()
                 break
         if accepted:
+            improvement = last_error - context.error()
+            stagnant_steps = stagnant_steps + 1 if improvement < 1e-6 else 0
+            last_error = context.error()
+            if stagnant_steps >= (3 if context.unreachable else 6):
+                break
             continue
 
         context.restore(baseline)
         damping = min(damping * 10.0, 1e3)
         failed_steps += 1
-        if context.reachable and failed_steps <= 3:
-            sign = -1.0 if failed_steps % 2 == 0 else 1.0
-            _part1_break_singularity(context, sign * 0.04)
-        else:
+        if failed_steps >= (3 if context.unreachable else 6):
             break
+
     context.remember_best()
     return context.result()
 
@@ -372,7 +620,7 @@ def solve_gauss_newton(
     meta_data, joint_positions, joint_orientations, target_pose
 ):
     """Solve Part1 IK with the damped Gauss-Newton method."""
-    context = _Part1IKContext(
+    context = _Part1GaussNewtonContext(
         meta_data, joint_positions, joint_orientations, target_pose
     )
     return _part1_solve_gauss_newton(context)

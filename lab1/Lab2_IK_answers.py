@@ -30,7 +30,7 @@ def part1_IK_Origin(meta_data:MetaData, joint_positions, joint_orientations, tar
 
     # Three step for Chain IK
     # 1 find Path for IK metric
-    path = meta_data.get_path_from_root_to_end()[0]
+    path, path_name, path1, path2 = meta_data.get_path_from_root_to_end()
 
     # 2 CCD Method to apply IK
     for iterator in range(max_iteration):
@@ -93,6 +93,18 @@ def part1_IK_Origin(meta_data:MetaData, joint_positions, joint_orientations, tar
         if CCD_Flag: break
 
     # 3 revert if root is not the root of model
+    j_Parent = meta_data.joint_parent
+    TempOri = joint_orientations.copy()
+    if meta_data.root_joint != "RootJoint" :
+        for i in reversed(path2[1:-1]):     # XXX
+            if j_Parent[i] == -1: continue
+            currOri = R.from_quat(joint_orientations[i])
+            parOri = R.from_quat(joint_orientations[j_Parent[i]])
+            TempOri[i] = (parOri.inv() * currOri).as_quat()
+
+        for i in reversed(path2[1:-1]):
+            joint_orientations[i] = TempOri[i]
+
 
     return joint_positions, joint_orientations
 
