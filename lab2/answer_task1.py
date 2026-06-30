@@ -2,6 +2,7 @@ import numpy as np
 import copy
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
+import math
 # ------------- lab1里的代码 -------------#
 def load_meta_data(bvh_path):
     with open(bvh_path, 'r') as f:
@@ -204,12 +205,23 @@ class BVHMotion():
         '''
         输入: rotation 形状为(4,)的ndarray, 四元数旋转
         输出: Ry, Rxz，分别为绕y轴的旋转和转轴在xz平面的旋转，并满足R = Ry * Rxz
+        q = normalize(rotation)
+        Ry = normalize([0, q.y, 0, q.w])
+        Rxz = inverse(Ry) * q
+        return Ry, Rxz
         '''
         Ry = np.zeros_like(rotation)
         Rxz = np.zeros_like(rotation)
+
         # TODO: 你的代码
-        
-        return Ry, Rxz
+        # XXX: normlizaion
+
+        # rot_N = normalizationQ(rotation)
+        R_Origin = R.from_quat(rotation)
+        Ry = R.from_quat([0.0, rotation[1], 0.0, rotation[3]])
+        Rxz = Ry.inv() * R_Origin
+
+        return Ry.as_quat(), Rxz.as_quat()
     
     # part 1
     def translation_and_rotation(self, frame_num, target_translation_xz, target_facing_direction_xz):
@@ -218,7 +230,7 @@ class BVHMotion():
         使第frame_num帧的根节点平移为target_translation_xz, 水平面朝向为target_facing_direction_xz
         frame_num: int
         target_translation_xz: (2,)的ndarray
-        target_faceing_direction_xz: (2,)的ndarray，表示水平朝向。你可以理解为原本的z轴被旋转到这个方向。
+        target_facing_direction_xz: (2,)的ndarray，表示水平朝向。你可以理解为原本的z轴被旋转到这个方向。
         Tips:
             主要是调整root节点的joint_position和joint_rotation
             frame_num可能是负数，遵循python的索引规则
@@ -231,7 +243,37 @@ class BVHMotion():
         # 比如说，你可以这样调整第frame_num帧的根节点平移
         offset = target_translation_xz - res.joint_position[frame_num, 0, [0,2]]
         res.joint_position[:, 0, [0,2]] += offset
+
         # TODO: 你的代码
+        Ry = self.decompose_rotation_with_yaxis(res.joint_rotation[frame_num, 0, :])[0]
+
+        # arctan2 is not define
+        tg_Angle = math.atan2(target_facing_direction_xz[0], target_facing_direction_xz[1])
+        tg_Rot = R.from_rotvec([0, tg_Angle, 0])
+        Delta_R = tg_Rot * R.from_quat(Ry).inv()
+
+        # all frame orientation
+        allFrame_Rot = [
+            Delta_R * R.from_quat(i)
+            for i in res.joint_rotation[:, 0, :]
+            # for i in res.joint_rotation[:, 0]
+        ]
+
+        res.joint_rotation[:, 0, :] = [i.as_quat() for i in allFrame_Rot]
+
+        # all frame trail
+        Root_Pos = res.joint_position[frame_num, 0, :]
+        # Trail_Offset = [(i - Root_Pos) for i in res.joint_position[:, 0, :]]
+        # Rot_Offset = [Delta_R.apply(i) for i in Trail_Offset]
+        Trail_Offset = [
+            Delta_R.apply(i - Root_Pos) + Root_Pos
+            for i in res.joint_position[:, 0, :]
+        ]
+
+
+        # res.joint_position[:, 0, :] = Rot_Offset + Root_Pos
+        res.joint_position[:, 0, :] = Trail_Offset
+
         return res
 
 # part2
@@ -285,3 +327,7 @@ def concatenate_two_motions(bvh_motion1, bvh_motion2, mix_frame1, mix_time):
     
     return res
 
+def normalizationQ(quat):
+    np.linalg.norm(quat)
+    quatNorm = quat / np.linalg.norm(quat)
+    return quatNorm
