@@ -215,8 +215,8 @@ class BVHMotion():
 
         # TODO: 你的代码
         # XXX: normlizaion
-
         # rot_N = normalizationQ(rotation)
+
         R_Origin = R.from_quat(rotation)
         Ry = R.from_quat([0.0, rotation[1], 0.0, rotation[3]])
         Rxz = Ry.inv() * R_Origin
@@ -246,33 +246,31 @@ class BVHMotion():
 
         # TODO: 你的代码
         Ry = self.decompose_rotation_with_yaxis(res.joint_rotation[frame_num, 0, :])[0]
-
-        # arctan2 is not define
-        tg_Angle = math.atan2(target_facing_direction_xz[0], target_facing_direction_xz[1])
+        tg_Facing_XZ = target_facing_direction_xz
+        tg_Angle = math.atan2(tg_Facing_XZ[0], tg_Facing_XZ[1])
         tg_Rot = R.from_rotvec([0, tg_Angle, 0])
         Delta_R = tg_Rot * R.from_quat(Ry).inv()
 
         # all frame orientation
-        allFrame_Rot = [
-            Delta_R * R.from_quat(i)
-            for i in res.joint_rotation[:, 0, :]
-            # for i in res.joint_rotation[:, 0]
-        ]
+        res.joint_rotation[:, 0, :] = (
+            (Delta_R * R.from_quat(res.joint_rotation[:, 0, :])).as_quat()
+        )
 
-        res.joint_rotation[:, 0, :] = [i.as_quat() for i in allFrame_Rot]
+        # res.joint_rotation[:, 0, :] = [
+        #     (Delta_R * R.from_quat(i)).as_quat()
+        #     for i in res.joint_rotation[:, 0, :]
+        # ]
 
         # all frame trail
         Root_Pos = res.joint_position[frame_num, 0, :]
-        # Trail_Offset = [(i - Root_Pos) for i in res.joint_position[:, 0, :]]
-        # Rot_Offset = [Delta_R.apply(i) for i in Trail_Offset]
-        Trail_Offset = [
-            Delta_R.apply(i - Root_Pos) + Root_Pos
-            for i in res.joint_position[:, 0, :]
-        ]
+        res.joint_position[:, 0, :] = (
+                Delta_R.apply(res.joint_position[:, 0, :]- Root_Pos) + Root_Pos
+        )
 
-
-        # res.joint_position[:, 0, :] = Rot_Offset + Root_Pos
-        res.joint_position[:, 0, :] = Trail_Offset
+        # res.joint_position[:, 0, :] = [
+        #     Delta_R.apply(i - Root_Pos) + Root_Pos
+        #     for i in res.joint_position[:, 0, :]
+        # ]
 
         return res
 
