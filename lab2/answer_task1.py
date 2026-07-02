@@ -275,7 +275,7 @@ class BVHMotion():
         return res
 
 # part2
-def blend_two_motions(bvh_motion1, bvh_motion2, alpha):
+def blend_two_motions(bvh_motion1:BVHMotion, bvh_motion2, alpha):
     '''
     blend两个bvh动作
     假设两个动作的帧数分别为n1, n2
@@ -290,7 +290,32 @@ def blend_two_motions(bvh_motion1, bvh_motion2, alpha):
     res.joint_rotation[...,3] = 1.0
 
     # TODO: 你的代码
-    
+    n1 = len(bvh_motion1.joint_position)
+    n2 = len(bvh_motion2.joint_position)
+    n3 = len(alpha)
+
+    for i in range(n3):
+        #res.joint_rotation = (rot1 + (1-alpha[i]) * rot2)
+        t = i / (n3 - 1) if n3 > 1 else 0.0
+        x = int(np.round(t * (n1 - 1)))
+        y = int(np.round(t * (n2 - 1)))
+        w = alpha[i]
+
+        # position
+        pos1 = bvh_motion1.joint_position[x]
+        pos2 = bvh_motion2.joint_position[y]
+        res.joint_position[i] = w * pos1 + (1-w) * pos2
+
+        # rotation
+        rot1 = R.from_quat(bvh_motion1.joint_rotation[x])
+        rot2 = R.from_quat(bvh_motion2.joint_rotation[y])
+            # SLERP or Linear?
+
+        rot_Angle = (rot2 * rot1.inv()).as_rotvec()
+        slerp_Angle = R.from_rotvec(rot_Angle * w) * rot1
+
+        res.joint_rotation[i] = slerp_Angle.as_quat()
+
     return res
 
 # part3
